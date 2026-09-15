@@ -471,12 +471,23 @@ function initThree() {
     scene.add(wall);
   });
 
-  // Other player mesh
+  // Other player mesh (group: body cylinder + head sphere, since CapsuleGeometry isn't in r128)
   const otherColor = isHost ? 0xfb7185 : 0x38bdf8;
-  const geo = new THREE.CapsuleGeometry(0.4, 1, 4, 8);
   const mat = new THREE.MeshStandardMaterial({ color: otherColor });
-  otherPlayerMesh = new THREE.Mesh(geo, mat);
-  otherPlayerMesh.castShadow = true;
+  otherPlayerMesh = new THREE.Group();
+
+  const bodyGeo = new THREE.CylinderGeometry(0.35, 0.35, 1, 8);
+  const body = new THREE.Mesh(bodyGeo, mat);
+  body.position.y = 0.5;
+  body.castShadow = true;
+  otherPlayerMesh.add(body);
+
+  const headGeo = new THREE.SphereGeometry(0.3, 12, 12);
+  const head = new THREE.Mesh(headGeo, mat);
+  head.position.y = 1.1;
+  head.castShadow = true;
+  otherPlayerMesh.add(head);
+
   otherPlayerMesh.visible = false;
   scene.add(otherPlayerMesh);
 
