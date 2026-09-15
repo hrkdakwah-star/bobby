@@ -184,6 +184,62 @@
     font-weight: 600;
     cursor: pointer;
   }
+
+  /* ---- Chat ---- */
+  #chat-container {
+    position: fixed;
+    bottom: 70px;
+    left: 16px;
+    width: 300px;
+    display: none;
+    z-index: 30;
+    pointer-events: all;
+  }
+  #chat-messages {
+    max-height: 160px;
+    overflow-y: auto;
+    background: rgba(15, 23, 42, 0.75);
+    border-radius: 10px 10px 0 0;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #chat-messages::-webkit-scrollbar { width: 6px; }
+  #chat-messages::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  .chat-line {
+    font-size: 13px;
+    color: #e2e8f0;
+    word-wrap: break-word;
+    line-height: 1.4;
+  }
+  .chat-line .sender-you { color: #38bdf8; font-weight: 600; }
+  .chat-line .sender-friend { color: #fb7185; font-weight: 600; }
+  #chat-input-row {
+    display: flex;
+    background: rgba(15, 23, 42, 0.9);
+    border-radius: 0 0 10px 10px;
+    overflow: hidden;
+  }
+  #chatInput {
+    flex: 1;
+    padding: 9px 12px;
+    background: transparent;
+    border: none;
+    color: #f1f5f9;
+    font-size: 13px;
+    outline: none;
+  }
+  #chatInput::placeholder { color: #64748b; }
+  #chatSendBtn {
+    padding: 9px 14px;
+    background: #38bdf8;
+    color: #0f172a;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -216,7 +272,15 @@
 </div>
 <div id="room-badge">Room: <span id="roomBadgeCode"></span></div>
 <div id="crosshair"></div>
-<div id="mobile-hint">WASD gerak • Mouse lihat sekitar • Klik untuk kunci kursor</div>
+<div id="mobile-hint">WASD gerak • Space lompat • Mouse lihat sekitar • Enter chat</div>
+
+<div id="chat-container">
+  <div id="chat-messages"></div>
+  <div id="chat-input-row">
+    <input type="text" id="chatInput" placeholder="Ketik pesan, Enter kirim..." maxlength="120">
+    <button id="chatSendBtn">Kirim</button>
+  </div>
+</div>
 
 <div id="win-banner">
   <div id="win-text"></div>
@@ -271,6 +335,14 @@ let pointerLocked = false;
 
 const MOVE_SPEED = 6;
 const WORLD_SIZE = 40;
+const GROUND_Y = 1.6;
+const GRAVITY = -20;
+const JUMP_FORCE = 8;
+let velocityY = 0;
+let isGrounded = true;
+
+// ---------- Chat State ----------
+let chatMessages = [];
 
 // ---------- UI Elements ----------
 const lobby = document.getElementById('lobby');
@@ -401,7 +473,9 @@ function startGame() {
   roomBadge.style.display = 'block';
   crosshair.style.display = 'block';
   mobileHint.style.display = 'block';
+  document.getElementById('chat-container').style.display = 'block';
   document.getElementById('roomBadgeCode').textContent = roomCode;
+  setupChat();
 
   initThree();
   spawnItems();
@@ -417,7 +491,7 @@ function initThree() {
   scene.fog = new THREE.Fog(0x87ceeb, 20, 60);
 
   camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
-  camera.position.set(0, 1.6, 0);
+  camera.position.set(0, GROUND_Y, 0);
 
   const canvas = document.getElementById('gameCanvas');
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -471,23 +545,12 @@ function initThree() {
     scene.add(wall);
   });
 
-  // Other player mesh (group: body cylinder + head sphere, since CapsuleGeometry isn't in r128)
-  const otherColor = isHost ? 0xfb7185 : 0x38bdf8;
-  const mat = new THREE.MeshStandardMaterial({ color: otherColor });
-  otherPlayerMesh = new THREE.Group();
+  // Other player mesh — simple cartoon character (body, head, arms, legs)
+  const suitColor = isHost ? 0xfb7185 : 0x38bdf8;
+  const skinColor = 0xffcc99;
+  const shoeColor = 0x334155;
 
-  const bodyGeo = new THREE.CylinderGeometry(0.35, 0.35, 1, 8);
-  const body = new THREE.Mesh(bodyGeo, mat);
-  body.position.y = 0.5;
-  body.castShadow = true;
-  otherPlayerMesh.add(body);
-
-  const headGeo = new THREE.SphereGeometry(0.3, 12, 12);
-  const head = new THREE.Mesh(headGeo, mat);
-  head.position.y = 1.1;
-  head.castShadow = true;
-  otherPlayerMesh.add(head);
-
+  otherPlayerMesh = buildCharacter(suitColor, skinColor, shoeColor);
   otherPlayerMesh.visible = false;
   scene.add(otherPlayerMesh);
 
@@ -495,6 +558,105 @@ function initThree() {
 
   window.addEventListener('resize', onResize);
   setupControls();
+}
+
+function buildCharacter(suitColor, skinColor, shoeColor) {
+  const group = new THREE.Group();
+  const suitMat = new THREE.MeshStandardMaterial({ color: suitColor });
+  const skinMat = new THREE.MeshStandardMaterial({ color: skinColor });
+  const shoeMat = new THREE.MeshStandardMaterial({ color: shoeColor });
+  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+
+  // Torso
+  const torsoGeo = new THREE.BoxGeometry(0.5, 0.65, 0.3);
+  const torso = new THREE.Mesh(torsoGeo, suitMat);
+  torso.position.y = 0.75;
+  torso.castShadow = true;
+  group.add(torso);
+
+  // Head
+  const headGeo = new THREE.BoxGeometry(0.38, 0.38, 0.38);
+  const head = new THREE.Mesh(headGeo, skinMat);
+  head.position.y = 1.28;
+  head.castShadow = true;
+  group.add(head);
+
+  // Eyes (two small dark boxes on the face)
+  const eyeGeo = new THREE.BoxGeometry(0.06, 0.06, 0.03);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.09, 1.3, 0.2);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.09, 1.3, 0.2);
+  group.add(eyeR);
+
+  // Arms (pivoted at shoulder for swing animation)
+  const armGeo = new THREE.BoxGeometry(0.16, 0.55, 0.18);
+
+  const armL = new THREE.Group();
+  armL.position.set(-0.33, 1.05, 0);
+  const armLMesh = new THREE.Mesh(armGeo, skinMat);
+  armLMesh.position.y = -0.27;
+  armLMesh.castShadow = true;
+  armL.add(armLMesh);
+  group.add(armL);
+
+  const armR = new THREE.Group();
+  armR.position.set(0.33, 1.05, 0);
+  const armRMesh = new THREE.Mesh(armGeo, skinMat);
+  armRMesh.position.y = -0.27;
+  armRMesh.castShadow = true;
+  armR.add(armRMesh);
+  group.add(armR);
+
+  // Legs (pivoted at hip for walk animation)
+  const legGeo = new THREE.BoxGeometry(0.18, 0.55, 0.2);
+
+  const legL = new THREE.Group();
+  legL.position.set(-0.13, 0.42, 0);
+  const legLMesh = new THREE.Mesh(legGeo, suitMat);
+  legLMesh.position.y = -0.27;
+  legLMesh.castShadow = true;
+  legL.add(legLMesh);
+  const shoeLMesh = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.12, 0.28), shoeMat);
+  shoeLMesh.position.set(0, -0.6, 0.05);
+  legL.add(shoeLMesh);
+  group.add(legL);
+
+  const legR = new THREE.Group();
+  legR.position.set(0.13, 0.42, 0);
+  const legRMesh = new THREE.Mesh(legGeo, suitMat);
+  legRMesh.position.y = -0.27;
+  legRMesh.castShadow = true;
+  legR.add(legRMesh);
+  const shoeRMesh = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.12, 0.28), shoeMat);
+  shoeRMesh.position.set(0, -0.6, 0.05);
+  legR.add(shoeRMesh);
+  group.add(legR);
+
+  // Store limb refs for animation
+  group.userData.limbs = { armL, armR, legL, legR };
+  group.userData.walkTime = 0;
+
+  return group;
+}
+
+function animateCharacterWalk(charGroup, delta, isMoving) {
+  const limbs = charGroup.userData.limbs;
+  if (!limbs) return;
+
+  if (isMoving) {
+    charGroup.userData.walkTime += delta * 8;
+  } else {
+    charGroup.userData.walkTime *= 0.85; // smoothly settle to idle
+  }
+  const t = charGroup.userData.walkTime;
+  const swing = Math.sin(t) * 0.5;
+
+  limbs.armL.rotation.x = swing;
+  limbs.armR.rotation.x = -swing;
+  limbs.legL.rotation.x = -swing;
+  limbs.legR.rotation.x = swing;
 }
 
 function addTree(x, z) {
@@ -550,11 +712,30 @@ function setupControls() {
   });
 
   window.addEventListener('keydown', (e) => {
+    const chatInput = document.getElementById('chatInput');
+    if (document.activeElement === chatInput && e.key !== 'Enter') return;
+
     const k = e.key.toLowerCase();
     if (k === 'w') keys.w = true;
     if (k === 'a') keys.a = true;
     if (k === 's') keys.s = true;
     if (k === 'd') keys.d = true;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (isGrounded) {
+        velocityY = JUMP_FORCE;
+        isGrounded = false;
+      }
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const chatInput = document.getElementById('chatInput');
+      if (document.activeElement === chatInput) {
+        sendChatMessage();
+      } else {
+        chatInput.focus();
+      }
+    }
   });
   window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
@@ -572,6 +753,8 @@ function onResize() {
 }
 
 // ---------- Firebase Sync ----------
+let lastOtherPos = null;
+
 function listenToOtherPlayer() {
   db.ref(`rooms/${roomCode}/players`).on('value', (snap) => {
     const players = snap.val() || {};
@@ -579,9 +762,17 @@ function listenToOtherPlayer() {
       if (id !== playerId) {
         otherPlayerId = id;
         const p = players[id];
-        otherPlayerMesh.position.set(p.x, p.y - 0.6, p.z);
+        otherPlayerMesh.position.set(p.x, p.y - GROUND_Y, p.z);
         otherPlayerMesh.rotation.y = p.ry;
         otherPlayerMesh.visible = true;
+
+        if (lastOtherPos) {
+          const dx = p.x - lastOtherPos.x;
+          const dz = p.z - lastOtherPos.z;
+          otherPlayerMesh.userData.isMoving = (dx*dx + dz*dz) > 0.0002;
+        }
+        lastOtherPos = { x: p.x, z: p.z };
+
         friendScore = p.score || 0;
         document.getElementById('scoreFriend').textContent = friendScore;
       } else {
@@ -665,6 +856,67 @@ function checkWin() {
   }
 }
 
+// ---------- Chat ----------
+function setupChat() {
+  const sendBtn = document.getElementById('chatSendBtn');
+  const chatInput = document.getElementById('chatInput');
+
+  sendBtn.addEventListener('click', sendChatMessage);
+
+  // Prevent WASD keys from moving player while typing in chat
+  chatInput.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+  });
+  chatInput.addEventListener('focus', () => {
+    keys.w = keys.a = keys.s = keys.d = false;
+  });
+
+  db.ref(`rooms/${roomCode}/chat`).limitToLast(50).on('child_added', (snap) => {
+    const msg = snap.val();
+    renderChatMessage(msg);
+  });
+}
+
+function sendChatMessage() {
+  const chatInput = document.getElementById('chatInput');
+  const text = chatInput.value.trim();
+  if (!text) return;
+
+  db.ref(`rooms/${roomCode}/chat`).push({
+    senderId: playerId,
+    senderName: playerName,
+    text: text,
+    timestamp: Date.now()
+  });
+
+  chatInput.value = '';
+  chatInput.blur();
+}
+
+function renderChatMessage(msg) {
+  const container = document.getElementById('chat-messages');
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+  const isMe = msg.senderId === playerId;
+  const senderClass = isMe ? 'sender-you' : 'sender-friend';
+  const safeName = escapeHtml(msg.senderName || 'Player');
+  const safeText = escapeHtml(msg.text || '');
+  line.innerHTML = `<span class="${senderClass}">${safeName}:</span> ${safeText}`;
+  container.appendChild(line);
+  container.scrollTop = container.scrollHeight;
+
+  // Keep only last 30 lines in DOM
+  while (container.children.length > 30) {
+    container.removeChild(container.firstChild);
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 // ---------- Game Loop ----------
 function animate() {
   requestAnimationFrame(animate);
@@ -688,9 +940,19 @@ function animate() {
     camera.position.x = Math.max(-half, Math.min(half, camera.position.x));
     camera.position.z = Math.max(-half, Math.min(half, camera.position.z));
 
-    syncMyPosition();
     tryCollectItems();
   }
+
+  // Gravity & jump
+  velocityY += GRAVITY * delta;
+  camera.position.y += velocityY * delta;
+  if (camera.position.y <= GROUND_Y) {
+    camera.position.y = GROUND_Y;
+    velocityY = 0;
+    isGrounded = true;
+  }
+
+  syncMyPosition();
 
   camera.rotation.order = 'YXZ';
   camera.rotation.y = yaw;
@@ -700,6 +962,11 @@ function animate() {
   for (const id in itemMeshes) {
     itemMeshes[id].rotation.y += delta * 2;
     itemMeshes[id].position.y = 0.5 + Math.sin(Date.now() * 0.003 + id.length) * 0.15;
+  }
+
+  // Animate other player's walking limbs
+  if (otherPlayerMesh && otherPlayerMesh.visible) {
+    animateCharacterWalk(otherPlayerMesh, delta, !!otherPlayerMesh.userData.isMoving);
   }
 
   renderer.render(scene, camera);
